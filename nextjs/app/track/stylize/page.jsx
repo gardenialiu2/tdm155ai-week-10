@@ -15,7 +15,7 @@ export default function StylizePage() {
           <div className="cv-head">
             <p className="eyebrow">Track · Stylize</p>
             <h1>Your camera, as something handmade.</h1>
-            <p className="cv-lede">Pick a look (keys <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd>): ASCII characters, a watercolor wash, or cross-stitch on cloth. Everything runs in this tab; the camera never leaves your computer. Send the picture to <code>/stage</code> once, or switch on Live to stage. Each look is one function in <code>app/track/stylize/renderers.js</code>: change the ASCII ramp, the watercolor levels, or the thread colors.</p>
+            <p className="cv-lede">Pick a look (keys <kbd>1</kbd> to <kbd>4</kbd>): ASCII characters, a watercolor wash, cross-stitch on cloth, or pixel art. <strong>Face only</strong> keeps just your face, and <strong>Build up</strong> (<kbd>B</kbd>) draws the picture in piece by piece over four seconds. Everything runs in this tab; the camera never leaves your computer. Send the picture to <code>/stage</code> once, or switch on Live to stage. Each look is one function in <code>app/track/stylize/renderers.js</code>: change the ASCII ramp, the watercolor levels, or the thread colors.</p>
           </div>
           <Stylize />
         </div>

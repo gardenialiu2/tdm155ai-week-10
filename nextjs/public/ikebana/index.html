@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flower Arranger</title>
+<style>
+  :root { --bg:#0c1013; --panel:#12181c; --line:#243038; --fg:#e9edef; --dim:#8a98a2; --acc:#f4b6cf; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family: ui-monospace, Menlo, monospace; font-size:12px; }
+  header { padding: 18px 20px 6px; max-width: 1400px; margin: 0 auto; }
+  h1 { font-size: 14px; letter-spacing: .2em; text-transform: uppercase; font-weight: 400; margin: 0 0 6px; }
+  header p { margin: 0; color: var(--dim); line-height: 1.5; max-width: 760px; }
+  .app { display: grid; grid-template-columns: 296px minmax(0,1fr); gap: 16px; max-width: 1400px; margin: 0 auto; padding: 12px 20px 60px; align-items: start; }
+  @media (max-width: 900px) { .app { grid-template-columns: 1fr; } }
+  aside { background: var(--panel); border: 1px solid var(--line); padding: 10px 10px 14px; position: sticky; top: 10px; max-height: calc(100vh - 20px); overflow: auto; }
+  @media (max-width: 900px) { aside { position: static; max-height: none; } }
+  h3 { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; font-weight: 400; color: var(--dim); margin: 12px 2px 6px; }
+  h3:first-child { margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .fl { background: #0a0e11; border: 1px solid var(--line); color: var(--fg); padding: 2px 2px 5px; cursor: pointer; font: inherit; font-size: 10px; text-align: center; }
+  .fl canvas { width: 100%; display: block; image-rendering: pixelated; }
+  .fl:hover { border-color: #4a5c68; }
+  .fl.on { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 10px; }
+  .grp { display: flex; gap: 4px; align-items: center; }
+  .grp > span { color: var(--dim); font-size: 10px; letter-spacing: .15em; text-transform: uppercase; margin-right: 2px; }
+  button.b { background: var(--panel); color: var(--fg); border: 1px solid var(--line); font: inherit; font-size: 11px; padding: 5px 9px; cursor: pointer; }
+  button.b:hover { border-color: #4a5c68; }
+  button.b.on { border-color: var(--acc); color: var(--acc); }
+  button.b:disabled { opacity: .35; cursor: default; }
+  .sw { width: 18px; height: 18px; border: 1px solid #000a; cursor: pointer; padding: 0; }
+  .sw.on { outline: 2px solid var(--acc); outline-offset: 1px; }
+  .stagewrap { background: #000; border: 1px solid var(--line); overflow: hidden; display: flex; justify-content: center; }
+  pre#stage { margin: 0; line-height: 1; font-family: Menlo, "DejaVu Sans Mono", ui-monospace, monospace; white-space: pre; cursor: crosshair; user-select: none; touch-action: none; }
+  .insp { margin-top: 10px; background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; min-height: 48px; }
+  .insp .nm { letter-spacing: .15em; text-transform: uppercase; color: var(--acc); }
+  .insp label { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+  .insp input[type=range] { width: 110px; accent-color: var(--acc); }
+  .hint { color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flower arranger / ASCII</h1>
+  <p>Pick a flower on the left, then click the stage to place its head: the stem curves down into the vase on its own. Click a flower to select it, drag to move it, scroll to resize.</p>
+</header>
+<div class="app">
+  <aside id="palette"></aside>
+  <section>
+    <div class="bar" id="bar"></div>
+    <div class="stagewrap"><pre id="stage"></pre></div>
+    <div class="insp" id="insp"></div>
+  </section>
+</div>
+<script>
+"use strict";
+/* ============================================================
+   Flower arranger — half-block pixel art (same look as index.html)
+   Fine pixel grid SW x SH; every text row shows two fine rows via "▀".
+   A fine pixel is 1.2x wider than tall (ASPX), handled in all shape maths.
+   ============================================================ */
+const SW = 240, SH = 224, A = 1.2, D2R = Math.PI / 180;
+const BAY = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const cs = a => Math.cos(a * D2R), sn = a => Math.sin(a * D2R);
+const hash = (a, b, c = 0) => {
+  let h = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+};
+const mkc = (w, h) => ({ w, h, d: new Array(w * h).fill(null) });
+const px = (c, x, y, col) => { x = Math.round(x); y = Math.round(y); if (x >= 0 && y >= 0 && x < c.w && y < c.h) c.d[y * c.w + x] = col; };
+const dith = (x, y, v, cols) => {
+  v += (hash(x, y, 5) - .5) * .16;
+  const f = clamp(v) * (cols.length - 1), i = Math.min(cols.length - 2, Math.floor(f));
+  return f - i > (BAY[(y & 3) * 4 + (x & 3)] + .5) / 16 ? cols[i + 1] : cols[i];
+};
+/* colours */
+const hex2rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const rgb2hex = r => "#" + r.map(v => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, "0")).join("");
+const mix = (a, b, t) => { const p = hex2rgb(a), q = hex2rgb(b); return rgb2hex(p.map((v, i) => v + (q[i] - v) * t)); };
+const RAMPS = {};
+/* a palette = [6 colours dark -> light, outline] built from one base colour */
+function ramp(base) {
+  if (RAMPS[base]) return RAMPS[base];
+  const K = "#1a0a1c", W = "#ffffff";
+  return RAMPS[base] = [[mix(base, K, .78), mix(base, K, .5), mix(base, K, .22), base, mix(base, W, .35), mix(base, W, .7)], mix(base, K, .62)];
+}
+const GREEN = ramp("#3f8f55"), YEL = ramp("#f0b41a"), BROWN = ramp("#6b3d1e"), DARK = ramp("#2a1535"), MAG = ramp("#c2307f");
+
+/* ---------------- shape primitives ---------------- */
+/* pointed-oval petal from (ox,oy) along physical angle ang. o: k,m shape; vb,vt base/tip brightness; veins; spots; base:{u,cols}; streak; lite; ol(false=none); notch; sq */
+function petal(c, ox, oy, ang, len, wid, P, o = {}) {
+  if (len < 1.2 || wid < .4) return;
+  const [cols, ol] = P, ca = cs(ang), sa = sn(ang), r = Math.ceil(len + 2), k = o.k ?? .72, m = o.m ?? .8, sq = o.sq ?? 1;
+  const oc = o.ol === false ? null : (o.ol || ol);
+  const x0 = Math.floor(ox - r / A - 1), x1 = Math.ceil(ox + r / A + 1), y0 = Math.floor(oy - r * sq - 1), y1 = Math.ceil(oy + r * sq + 1);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const dx = (x - ox) * A, dy = (y - oy) / sq, u = (dx * ca + dy * sa) / len, vv = -dx * sa + dy * ca;
+    if (u < 0 || u > 1) continue;
+    const hw = wid * Math.pow(Math.sin(Math.PI * Math.pow(u, k)), m), av = Math.abs(vv);
+    if (av > hw) continue;
+    if (o.notch && u > .86 + .14 * Math.min(1, av / (hw * .6 + .01))) continue;
+    if (oc && (hw - av < 1.05 || (u > .965 && hw < 2))) { px(c, x, y, oc); continue; }
+    const e = av / (hw + .01);
+    let v = (o.vb ?? .95) + ((o.vt ?? .4) - (o.vb ?? .95)) * Math.pow(u, 1.3) - .22 * e * e + (o.lite || 0);
+    if (o.streak) v += .11 * Math.sin(vv * 1.1 + ang);
+    if (av < .6 && u > .1) v -= .2;
+    else if (o.veins && u > .1 && Math.cos((vv / hw) * o.veins * Math.PI) > .84) v -= .17;
+    if (o.base && u < o.base.u) { px(c, x, y, dith(x, y, .45 + .5 * u / o.base.u - e * .2, o.base.cols)); continue; }
+    if (o.spots && u > .2 && u < .8 && e < .75 && hash((x >> 1) + 3, (y >> 1) + 7, 21) < .1) { px(c, x, y, o.spots); continue; }
+    px(c, x, y, dith(x, y, v, cols));
+  }
+}
+/* shaded dome */
+function disc(c, cx, cy, r, P, o = {}) {
+  const [cols, ol] = P;
+  for (let y = Math.floor(cy - r - 1); y <= cy + r + 1; y++) for (let x = Math.floor(cx - r / A - 1); x <= cx + r / A + 1; x++) {
+    const dx = (x - cx) * A, dy = y - cy, d = Math.hypot(dx, dy);
+    if (d > r) continue;
+    if (o.ol !== false && r - d < 1.05) { px(c, x, y, ol); continue; }
+    const nx = dx / r, ny = dy / r, nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+    px(c, x, y, dith(x, y, .18 + .85 * Math.max(0, -.4 * nx - .55 * ny + .72 * nz) + (o.lite || 0), cols));
+  }
+  if (o.seeds) for (let i = 0; i < o.seeds; i++) {
+    const a = i * 137.508, rr = r * Math.sqrt((i + .5) / o.seeds) * .92, x = cx + cs(a) * rr / A, y = cy + sn(a) * rr;
+    px(c, x, y, cols[0]); px(c, x + 1, y, cols[Math.min(4, cols.length - 1)]);
+  }
+}
+const at = (cx, cy, ang, d) => [cx + cs(ang) * d / A, cy + sn(ang) * d];
+function ringP(c, cx, cy, rot, n, off, len, wid, P, o = {}) {
+  for (let i = 0; i < n; i++) {
+    const j = (hash(i, n, len | 0) - .5) * (o.jit ?? 6), lj = 1 + (hash(i, n, 3) - .5) * (o.lj ?? .08);
+    petal(c, cx, cy, rot + off + i * 360 / n + j, len * lj, wid, P, o);
+  }
+}
+const dot2 = (c, x, y, P) => { const k = P[0]; px(c, x, y, k[5]); px(c, x + 1, y, k[4]); px(c, x, y + 1, k[3]); px(c, x + 1, y + 1, k[2]); };
+
+/* ---------------- flower heads: (c, cx, cy, R, rot, P, seed) ---------------- */
+function rosette(c, cx, cy, R, rot, P, seed, o) {
+  const [cols, ol] = P, K = o.K, rings = [], bs = new Array(K);
+  for (let k = 0; k < K; k++) rings.push([1 - k * (.82 / K), hash(seed, k, 1) * 6.28, o.n0 + Math.floor(hash(seed, k, 2) * o.nv)]);
+  if (o.sep) for (let a = 0; a < 5; a++) petal(c, cx, cy, rot + 20 + a * 72, R * 1.2, R * .24, GREEN, { vb: .9, vt: .45, veins: 1 });
+  for (let y = Math.floor(cy - R * 1.2 - 2); y <= cy + R * 1.2 + 2; y++) for (let x = Math.floor(cx - R * 1.2 / A - 2); x <= cx + R * 1.2 / A + 2; x++) {
+    const dx = (x - cx) * A, dy = y - cy, r = Math.hypot(dx, dy), ang = Math.atan2(dy, dx) - rot * D2R;
+    let kk = -1;
+    for (let k = 0; k < K; k++) {
+      const [f, ph, n] = rings[k];
+      bs[k] = R * f * (1 + o.ruf * (.09 * Math.cos(n * ang + ph) + .045 * Math.cos((n + 2) * ang + ph * 2)));
+      if (r < bs[k]) kk = k;
+    }
+    if (kk < 0) continue;
+    const bk = bs[kk];
+    if (bk - r < (o.olw ?? 1.05)) { px(c, x, y, ol); continue; }
+    const inner = kk + 1 < K ? Math.min(bs[kk + 1] * .94, bk - 1) : 0, s = clamp((r - inner) / (bk - inner + .01));
+    let v = .2 + .72 * Math.pow(s, .85) + .1 * Math.cos(rings[kk][2] * 2 * ang + rings[kk][1]) + .12 * Math.cos(ang + 2.4) * s - kk * .015;
+    if (kk === K - 1 && Math.sin(r * .5 - ang * 2) > .78) { px(c, x, y, ol); continue; }
+    px(c, x, y, dith(x, y, v, cols));
+  }
+}
+const rose = (c, cx, cy, R, rot, P, s) => rosette(c, cx, cy, R, rot, P, s, { K: 6, n0: 3, nv: 3, ruf: 1, sep: true });
+const peony = (c, cx, cy, R, rot, P, s) => rosette(c, cx, cy, R, rot, P, s, { K: 7, n0: 5, nv: 4, ruf: 2.3, olw: .8 });
+const ranunculus = (c, cx, cy, R, rot, P, s) => rosette(c, cx, cy, R, rot, P, s, { K: 9, n0: 5, nv: 3, ruf: .6, olw: .7 });
+const carnation = (c, cx, cy, R, rot, P, s) => rosette(c, cx, cy, R, rot, P, s, { K: 5, n0: 11, nv: 4, ruf: 2.6, sep: true });
+
+function daisy(c, cx, cy, R, rot, P) {
+  const o = { k: .8, m: .7, vb: .45, vt: .95, streak: true, veins: 1 };
+  ringP(c, cx, cy, rot, 18, 0, R, R * .15, P, o); ringP(c, cx, cy, rot, 18, 10, R * .9, R * .15, P, { ...o, lite: .08 });
+  disc(c, cx, cy, R * .27, YEL, { seeds: 30 });
+}
+function gerbera(c, cx, cy, R, rot, P) {
+  const o = { k: .85, m: .7, vb: .45, vt: .95, streak: true };
+  ringP(c, cx, cy, rot, 22, 0, R, R * .12, P, o); ringP(c, cx, cy, rot, 22, 8, R * .93, R * .12, P, { ...o, lite: .06 });
+  ringP(c, cx, cy, rot, 18, 3, R * .6, R * .09, P, { ...o, lite: .12 });
+  disc(c, cx, cy, R * .3, ramp("#a89a2a"), { seeds: 24 }); disc(c, cx, cy, R * .17, DARK);
+}
+function sunflower(c, cx, cy, R, rot, P) {
+  const o = { k: .8, m: .7, vb: .45, vt: .95, streak: true, veins: 1 };
+  ringP(c, cx, cy, rot, 17, 0, R, R * .19, P, o); ringP(c, cx, cy, rot, 17, 10.5, R * .92, R * .19, P, { ...o, lite: .08 });
+  disc(c, cx, cy, R * .56, BROWN, { seeds: 150 });
+}
+function dahlia(c, cx, cy, R, rot, P) {
+  [[16, 0, 1, .17], [14, 5, .84, .17], [12, 9, .68, .17], [10, 13, .52, .16], [8, 5, .38, .15], [6, 0, .22, .12]].forEach(([n, off, f, w], i) =>
+    ringP(c, cx, cy, rot, n, off, R * f, R * w, P, { k: .75, m: .65, vb: .3 + i * .05, vt: .95, veins: 1, lite: i * .02 }));
+}
+function cosmos(c, cx, cy, R, rot, P) {
+  ringP(c, cx, cy, rot, 8, 0, R, R * .4, P, { k: .9, m: .6, notch: true, vb: .45, vt: .95, veins: 4, jit: 4 });
+  disc(c, cx, cy, R * .15, YEL, { seeds: 10 });
+}
+function poppy(c, cx, cy, R, rot, P) {
+  const o = { k: .9, m: .5, vb: .55, vt: .95, streak: true, veins: 6, base: { u: .2, cols: DARK[0] } };
+  petal(c, cx, cy, rot + 20, R, R * .62, P, { ...o, lite: -.1 }); petal(c, cx, cy, rot + 200, R, R * .62, P, { ...o, lite: -.1 });
+  petal(c, cx, cy, rot + 110, R * .98, R * .6, P, o); petal(c, cx, cy, rot + 290, R * .98, R * .6, P, o);
+  disc(c, cx, cy, R * .15, ramp("#8aa070"));
+  for (let i = 0; i < 26; i++) { const [x, y] = at(cx, cy, i * 360 / 26, R * (.2 + .06 * hash(i, 1, 1))); px(c, x, y, DARK[0]); if (i % 3 == 0) px(c, x + 1, y, "#6a3a7a"); }
+}
+function anemone(c, cx, cy, R, rot, P) {
+  ringP(c, cx, cy, rot, 7, 0, R, R * .42, P, { k: .85, m: .6, vb: .45, vt: .95, veins: 3 });
+  const C = ramp("#3b2a5a"); disc(c, cx, cy, R * .22, C);
+  for (let i = 0; i < 32; i++) { const a = i * 360 / 32, L = R * (.3 + .05 * hash(i, 2, 2));
+    for (let d = R * .2; d < L; d += .8) { const [x, y] = at(cx, cy, a, d); px(c, x, y, C[1]); }
+    const [x, y] = at(cx, cy, a, L); px(c, x, y, "#d8c8f0"); }
+}
+function mum(c, cx, cy, R, rot, P) {
+  [[26, 0, 1, .09], [24, 4, .84, .09], [20, 7, .68, .1], [14, 3, .48, .1]].forEach(([n, off, f, w], i) =>
+    ringP(c, cx, cy, rot, n, off, R * f, R * w, P, { k: .8, m: .8, ol: false, vb: .5 + i * .06, vt: .95, lite: i * .03, lj: .14 }));
+  disc(c, cx, cy, R * .1, ramp("#c8c040"), { ol: false });
+}
+function lily(c, cx, cy, R, rot, P) {
+  const spot = mix(P[0][2], "#2a0a1c", .5);
+  [0, 1].forEach(r => { for (let k = 0; k < 3; k++) petal(c, cx, cy, rot + r * 60 + k * 120, R * (r ? .95 : 1), R * (r ? .3 : .24), P,
+    { k: .8, m: .75, vb: .5, vt: .95, veins: 1, spots: spot, base: { u: .2, cols: ramp("#6aa050")[0] }, lite: r ? .08 : -.04 }); });
+  for (let k = 0; k < 6; k++) { const a = rot + 20 + k * 60, L = R * .45;
+    for (let d = 0; d < L; d += .8) { const [x, y] = at(cx, cy, a, d); px(c, x, y, "#eef2e6"); }
+    const [ex, ey] = at(cx, cy, a, L); for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) px(c, ex + i, ey + j, i + j ? "#b0334a" : "#6a1226"); }
+}
+function orchid(c, cx, cy, R, rot, P) {
+  const f = R / 30, o = { k: .85, m: .7, vb: .3, vt: .92, veins: 5 };
+  petal(c, cx, cy, rot + 128, 28 * f, 9 * f, P, { ...o, lite: -.05 }); petal(c, cx, cy, rot + 52, 28 * f, 9 * f, P, { ...o, lite: -.05 });
+  petal(c, cx, cy, rot - 90, 30 * f, 9.5 * f, P, o);
+  petal(c, cx, cy, rot + 196, 29 * f, 17 * f, P, { ...o, k: 1, m: .55, lite: .05 }); petal(c, cx, cy, rot - 16, 29 * f, 17 * f, P, { ...o, k: 1, m: .55, lite: .05 });
+  petal(c, cx, cy + 1, rot + 90, 17 * f, 6.5 * f, MAG, { k: .8, vb: .1, vt: .7, ol: MAG[1], veins: 3 });
+  petal(c, cx, cy + 1, rot + 148, 10 * f, 3.4 * f, MAG, { k: .8, vb: .15, vt: .6 }); petal(c, cx, cy + 1, rot + 32, 10 * f, 3.4 * f, MAG, { k: .8, vb: .15, vt: .6 });
+  for (let i = 0; i < 6; i++) px(c, cx - 1 + (i % 3), cy - 1 + (i > 2 ? 1 : 0), i < 3 ? "#ffffff" : "#e9c0da");
+}
+function tulip(c, cx, cy, R, rot, P) {
+  const L = R * 1.6, o = { k: 1.6, m: .8, vb: .35, vt: .95, streak: true };
+  petal(c, cx, cy, rot - 5, L, L * .21, P, { ...o, lite: -.22 }); petal(c, cx, cy, rot + 5, L, L * .21, P, { ...o, lite: -.22 });
+  petal(c, cx, cy, rot - 13, L * .94, L * .24, P, { ...o, lite: -.06, veins: 3 }); petal(c, cx, cy, rot + 13, L * .94, L * .24, P, { ...o, lite: -.06, veins: 3 });
+  petal(c, cx, cy + 1, rot, L * .97, L * .23, P, { ...o, lite: .08, veins: 4 });
+}
+function hydrangea(c, cx, cy, R, rot, P, seed) {
+  const N = 78, order = [];
+  for (let i = 0; i < N; i++) order.push(i);
+  order.sort((a, b) => hash(a, seed, 4) - hash(b, seed, 4));
+  const alt = [P, ramp(mix(P[0][3], "#b070d0", .25)), ramp(mix(P[0][3], "#ffffff", .18))];
+  for (const i of order) {
+    const a = i * 137.508, rr = R * Math.sqrt((i + .5) / N) * .96, [x, y] = at(cx, cy, a, rr), dm = Math.hypot((x - cx) * A, y - cy) / R;
+    const lite = .22 * (-(x - cx) * .5 - (y - cy) * .8) / R - .1 * dm * dm, Q = alt[Math.floor(hash(i, seed, 9) * 3)], rj = hash(i, seed, 2) * 90;
+    for (let j = 0; j < 4; j++) petal(c, x, y, rj + j * 90, 5.6, 2.9, Q, { k: .8, m: .8, vb: .75, vt: .95, lite, ol: Q[1] });
+    px(c, x, y, Q[0][5]);
+  }
+}
+/* spikes: anchor at (cx,cy), axis along rot */
+function floret(c, x, y, rot, n, len, wid, P, o) { for (let j = 0; j < n; j++) petal(c, x, y, rot + j * 360 / n, len, wid, P, o); }
+function lavender(c, cx, cy, R, rot, P, seed) {
+  const L = R * 3.4, n = 30;
+  for (let i = 0; i < L; i += .8) { const [x, y] = at(cx, cy, rot, i); px(c, x, y, GREEN[0][2]); }
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1), d = L * (.1 + .9 * t), w = 1 - .5 * t, [x, y] = at(cx, cy, rot, d);
+    for (const s of [-1, 1]) { const [fx, fy] = at(x, y, rot + 90 * s, 2.2 * w);
+      petal(c, fx, fy, rot + s * (38 + 10 * hash(i, s, 1)), 6 * w + 2, 1.9 * w + .5, P, { k: .8, m: .8, vb: .45 + .4 * t, vt: .95, ol: false, lite: (hash(i, s, 2) - .5) * .3 }); }
+  }
+}
+function delphinium(c, cx, cy, R, rot, P, seed) {
+  const L = R * 3.2, n = 16, W = ramp("#f4f0d0");
+  for (let i = 0; i < L; i += .8) { const [x, y] = at(cx, cy, rot, i); px(c, x, y, GREEN[0][2]); }
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1), d = L * (.1 + .9 * t), w = 1 - .62 * t, s = i % 2 ? 1 : -1, [x, y] = at(cx, cy, rot, d), [fx, fy] = at(x, y, rot + 90 * s, 4 * w);
+    if (t > .9) { petal(c, fx, fy, rot, 5, 1.8, P, { ol: false, vb: .3, vt: .6 }); continue; }
+    floret(c, fx, fy, hash(i, seed, 3) * 72, 5, 8 * w + 2.6, 3.1 * w + .9, P, { k: .8, m: .8, vb: .5, vt: .95, ol: P[1], lite: (hash(i, seed, 8) - .5) * .25 });
+    px(c, fx, fy, W[0][5]); px(c, fx + 1, fy, W[0][3]);
+  }
+}
+function snapdragon(c, cx, cy, R, rot, P, seed) {
+  const L = R * 2.9, n = 12;
+  for (let i = 0; i < L; i += .8) { const [x, y] = at(cx, cy, rot, i); px(c, x, y, GREEN[0][2]); }
+  for (let i = n - 1; i >= 0; i--) {
+    const t = i / (n - 1), d = L * (.08 + .92 * t), w = 1 - .6 * t, s = i % 2 ? 1 : -1, [x, y] = at(cx, cy, rot, d);
+    if (t > .78) { petal(c, x, y, rot + s * 25, 6 * w + 2.5, 2.4, P, { k: .9, m: .8, vb: .35, vt: .8 }); continue; }
+    petal(c, x, y, rot + s * 100, 9 * w + 3, 3.8 * w + 1.4, P, { k: .8, m: .8, vb: .4, vt: .9, lite: -.12 });
+    petal(c, x, y, rot + s * 52, 10 * w + 3.4, 4.2 * w + 1.5, P, { k: .8, m: .8, vb: .45, vt: 1, lite: .06, veins: 2 });
+    const [tx, ty] = at(x, y, rot + s * 75, 3.2 * w + 1); px(c, tx, ty, P[0][5]); px(c, tx + 1, ty, mix(P[0][3], "#f4d03a", .5));
+  }
+}
+function spray(c, cx, cy, R, rot, P, seed) {
+  const twig = GREEN[0][1];
+  const cluster = (x, y, n, spread, sd) => { for (let i = 0; i < n; i++) { const a = hash(i, sd, 1) * 360, d = hash(i, sd, 2) * spread; const [dx, dy] = at(x, y, a, d); dot2(c, dx, dy, P); } };
+  for (let b = 0; b < 7; b++) {
+    const a = rot + (b - 3) * 19 + (hash(b, seed, 1) - .5) * 10, L = R * (1.5 + 1.1 * hash(b, seed, 2));
+    for (let d = 0; d < L; d += .8) { const [x, y] = at(cx, cy, a, d); px(c, x, y, twig); }
+    const [ex, ey] = at(cx, cy, a, L); cluster(ex, ey, 6, R * .34, b * 7 + 1);
+    for (let s = 0; s < 3; s++) { const sd = L * (.35 + .22 * s), sa = a + (s % 2 ? 38 : -38), SL = R * (.5 + .25 * hash(b, s, 3)), [sx, sy] = at(cx, cy, a, sd);
+      for (let d = 0; d < SL; d += .8) { const [x, y] = at(sx, sy, sa, d); px(c, x, y, twig); }
+      const [tx, ty] = at(sx, sy, sa, SL); cluster(tx, ty, 5, R * .26, b * 11 + s); }
+  }
+}
+/* foliage tip */
+const leafTip = (c, cx, cy, R, rot, P) => { petal(c, cx, cy, rot, R * .8, R * .3, P, { k: .9, m: .6, vb: .8, vt: .4, veins: 1 }); };
+
+/* ---------------- plant catalogue ---------------- */
+const TYPES = [
+  { id: "rose", name: "Rose", cat: "Blooms", kind: "rad", R: 25, ext: 1.5, cols: ["#c42350", "#e8719c", "#f2a07a", "#efe3d0", "#f0c93a", "#b05ad0"], draw: rose, lv: { n: 3, t0: .35, t1: .7, ang: 48, len: 1.1, w: .3 } },
+  { id: "peony", name: "Peony", cat: "Blooms", kind: "rad", R: 30, ext: 1.5, cols: ["#f0a0c0", "#f27b6e", "#f6ecea", "#d83a8a"], draw: peony, lv: { n: 2, t0: .4, t1: .65, ang: 50, len: 1, w: .36 } },
+  { id: "ranunculus", name: "Ranunculus", cat: "Blooms", kind: "rad", R: 22, ext: 1.5, cols: ["#f28a30", "#f5cd3a", "#f08aa8", "#f6efe6", "#d83a3a"], draw: ranunculus, lv: { n: 2, t0: .4, t1: .65, ang: 50, len: 1, w: .3 } },
+  { id: "carnation", name: "Carnation", cat: "Blooms", kind: "rad", R: 22, ext: 1.5, cols: ["#ec6f9c", "#c42a3f", "#f4f0f0", "#f4a98a"], draw: carnation, lv: { n: 4, t0: .3, t1: .75, ang: 38, len: 1.2, w: .1 } },
+  { id: "daisy", name: "Daisy", cat: "Blooms", kind: "rad", R: 22, ext: 1.4, cols: ["#f4f4f0", "#f6b6cc", "#c9b6f0"], draw: daisy, lv: { n: 2, t0: .4, t1: .7, ang: 40, len: 1.1, w: .14 } },
+  { id: "gerbera", name: "Gerbera", cat: "Blooms", kind: "rad", R: 26, ext: 1.4, cols: ["#f2701f", "#ec4f8b", "#f6c522", "#d8283c"], draw: gerbera, lv: { n: 2, t0: .3, t1: .55, ang: 45, len: 1.2, w: .3 } },
+  { id: "sunflower", name: "Sunflower", cat: "Blooms", kind: "rad", R: 32, ext: 1.4, cols: ["#f2b705", "#ee8a12", "#c8561e"], draw: sunflower, sw: 4, lv: { n: 2, t0: .4, t1: .65, ang: 55, len: 1.1, w: .55 } },
+  { id: "dahlia", name: "Dahlia", cat: "Blooms", kind: "rad", R: 28, ext: 1.4, cols: ["#d8307a", "#f2735a", "#f09a2a", "#f4ece8", "#8a1c40"], draw: dahlia, lv: { n: 2, t0: .4, t1: .65, ang: 50, len: 1, w: .3 } },
+  { id: "cosmos", name: "Cosmos", cat: "Blooms", kind: "rad", R: 24, ext: 1.4, cols: ["#f08ab8", "#f4f0f4", "#d63a8c", "#f09a40"], draw: cosmos, sw: 2, lv: { n: 4, t0: .25, t1: .75, ang: 28, len: 1, w: .06, k: 1, m: .6, veins: 0 } },
+  { id: "poppy", name: "Poppy", cat: "Blooms", kind: "rad", R: 26, ext: 1.4, cols: ["#e0322a", "#f28a2a", "#f5a0b4", "#f6f2ea"], draw: poppy, sw: 2, lv: { n: 2, t0: .35, t1: .6, ang: 45, len: .9, w: .24 } },
+  { id: "anemone", name: "Anemone", cat: "Blooms", kind: "rad", R: 22, ext: 1.4, cols: ["#f2f0f6", "#7a4ab8", "#c8263f", "#4a62c8"], draw: anemone, lv: { n: 2, t0: .35, t1: .55, ang: 45, len: 1, w: .3 } },
+  { id: "mum", name: "Spider mum", cat: "Blooms", kind: "rad", R: 26, ext: 1.4, cols: ["#f0f2e8", "#f0d03a", "#b8d86a", "#d07a2a"], draw: mum, lv: { n: 3, t0: .3, t1: .7, ang: 45, len: 1, w: .2 } },
+  { id: "lily", name: "Lily", cat: "Blooms", kind: "rad", R: 30, ext: 1.4, cols: ["#ec7fae", "#f6f2ee", "#f08a2e", "#f5d03a"], draw: lily, lv: { n: 3, t0: .3, t1: .7, ang: 30, len: 1.3, w: .1, k: .85 } },
+  { id: "orchid", name: "Orchid", cat: "Blooms", kind: "rad", R: 28, ext: 1.4, cols: ["#f2eef4", "#e898c4", "#9a58c8", "#f0d058"], draw: orchid, sw: 2, lv: { n: 1, t0: .3, t1: .3, ang: 40, len: 1.2, w: .22 } },
+  { id: "tulip", name: "Tulip", cat: "Blooms", kind: "dir", R: 24, ext: 1.7, cols: ["#d8283c", "#f08ab0", "#f4cc3a", "#8a3ab0", "#f4f0ea", "#f27a2a"], draw: tulip, lv: { n: 2, t0: .2, t1: .45, ang: 18, len: 2.4, w: .2, k: 1.1 } },
+  { id: "hydrangea", name: "Hydrangea", cat: "Blooms", kind: "rad", R: 30, ext: 1.3, cols: ["#6a8ae0", "#e890b8", "#a58ae0", "#f0f0f4", "#b8d8a0"], draw: hydrangea, sw: 4, lv: { n: 2, t0: .35, t1: .6, ang: 50, len: 1.1, w: .5 } },
+  { id: "lavender", name: "Lavender", cat: "Spikes & sprays", kind: "spike", R: 20, len: 3.4, ext: 3.7, cols: ["#8a6ad0", "#9aa0e8", "#d89ae0"], draw: lavender, sw: 2, lv: { n: 2, t0: .15, t1: .4, ang: 25, len: 1.4, w: .06, k: 1, m: .6, veins: 0 } },
+  { id: "delphinium", name: "Delphinium", cat: "Spikes & sprays", kind: "spike", R: 20, len: 3.2, ext: 3.5, cols: ["#3f5fd8", "#7a4ac8", "#f0f0f8", "#e890c8"], draw: delphinium, sw: 3, lv: { n: 2, t0: .2, t1: .5, ang: 40, len: 1.2, w: .3 } },
+  { id: "snapdragon", name: "Snapdragon", cat: "Spikes & sprays", kind: "spike", R: 20, len: 2.9, ext: 3.2, cols: ["#ee7aa8", "#f4c93a", "#f2762a", "#d8283c", "#f4f0ea"], draw: snapdragon, sw: 3, lv: { n: 2, t0: .2, t1: .5, ang: 35, len: 1.2, w: .14 } },
+  { id: "babysbreath", name: "Baby's breath", cat: "Spikes & sprays", kind: "spray", R: 24, ext: 3.0, cols: ["#f6f6f4", "#f6d6e0"], draw: spray, sw: 2 },
+  { id: "eucalyptus", name: "Eucalyptus", cat: "Greenery", kind: "fol", R: 17, ext: 1.2, cols: ["#7fae9c", "#5f9a62", "#a8c4b0"], draw: leafTip, sw: 2, fol: true, lv: { n: 9, t0: .1, t1: .96, ang: 66, len: .72, w: .5, k: 1, m: .5, veins: 0, both: true, taper: true } },
+  { id: "fern", name: "Fern", cat: "Greenery", kind: "fol", R: 26, ext: 1.2, cols: ["#3f9a52", "#2c7040", "#7ab848"], draw: leafTip, sw: 2, fol: true, lv: { n: 20, t0: .08, t1: .98, ang: 56, len: .75, w: .17, k: .9, m: .6, veins: 0, both: true, taper: true } },
+  { id: "olive", name: "Olive branch", cat: "Greenery", kind: "fol", R: 22, ext: 1.2, cols: ["#8aa070", "#9aae98"], draw: leafTip, sw: 2, fol: true, lv: { n: 12, t0: .12, t1: .96, ang: 40, len: .62, w: .13, k: .9, m: .7, veins: 0, both: true, taper: true } },
+];
+const TY = Object.fromEntries(TYPES.map(t => [t.id, t]));
+
+/* ---------------- vases ---------------- */
+const GLAZES = [["Celadon", "#6faea8"], ["Cobalt", "#34509e"], ["Terracotta", "#c46a3f"], ["Cream", "#ece6da"], ["Ink", "#2e2e36"]];
+const smooth = t => t * t * (3 - 2 * t);
+const VASES = {
+  dish: { name: "Flat dish", cx: 120, my: 178, hw: 68, ry: 11, top: 178, bot: 203, mhw: 58, shape: "round",
+    prof: y => { const t = (y - 178) / 25; return t > .86 ? 68 * .5 : 68 * (1 - .42 * Math.pow(t, 1.8)); } },
+  pillow: { name: "Pillow vase", cx: 120, my: 128, hw: 15, ry: 4, top: 128, bot: 203, mhw: 11, shape: "flat",
+    prof: y => y < 142 ? lerp(15, 17, (y - 128) / 14) : y < 168 ? lerp(17, 55, smooth((y - 142) / 26)) : y < 196 ? 55 : lerp(55, 47, (y - 196) / 7) },
+  slab: { name: "Tall slab", cx: 120, my: 122, hw: 27, ry: 6, top: 122, bot: 203, mhw: 21, shape: "flat",
+    prof: y => 27 + 3.5 * Math.sin(((y - 122) / 81) * Math.PI) - 2 * (y - 122) / 81 },
+};
+const BACKDROPS = {
+  dusk: { name: "Dusk", wall: ["#050a0d", "#0b161b", "#13232a", "#1e3944"], table: ["#0a1216", "#101c21", "#17282f"], light: false, flat: "#071014" },
+  linen: { name: "Linen", wall: ["#bdb4a3", "#cdc4b3", "#ddd5c5", "#ece6d8"], table: ["#a8977c", "#b8a88e", "#c8b99f"], light: true, flat: "#d4ccbc" },
+  blush: { name: "Blush", wall: ["#b9808c", "#cc98a2", "#dfb0b8", "#efcdd0"], table: ["#8c5d62", "#9f6f74", "#b08286"], light: true, flat: "#d3a3ab" },
+};
+const TABLE_Y = 186;
+
+const cache = new Map();
+const memo = (key, f) => { if (!cache.has(key)) { if (cache.size > 400) cache.clear(); cache.set(key, f()); } return cache.get(key); };
+
+function backdropBuf(bdKey, vaseKey) {
+  return memo("bd|" + bdKey + "|" + vaseKey, () => {
+    const B = BACKDROPS[bdKey], V = VASES[vaseKey], c = mkc(SW, SH);
+    for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
+      if (y < TABLE_Y) {
+        const d = Math.hypot((x - 120) / 150, (y - 90) / 120);
+        c.d[y * SW + x] = dith(x, y, .95 - d * .95, B.wall);
+      } else {
+        const t = (y - TABLE_Y) / (SH - TABLE_Y);
+        c.d[y * SW + x] = y < TABLE_Y + 1 ? B.table[0] : dith(x, y, .2 + .6 * t + .2 * Math.cos((x - 120) / 70), B.table);
+      }
+    }
+    for (let y = V.bot - 4; y <= V.bot + 9; y++) for (let x = V.cx - 90; x <= V.cx + 90; x++) { // soft shadow
+      const d = Math.hypot((x - V.cx) / (V.hw * 1.3), (y - (V.bot + 1)) / 8);
+      if (d < 1 && c.d[y * SW + x]) c.d[y * SW + x] = mix(c.d[y * SW + x], "#000000", d < .45 ? .55 : d < .75 ? .35 : .16);
+    }
+    return c;
+  });
+}
+function vaseLayers(vaseKey, glazeIdx) {
+  return memo("vase|" + vaseKey + "|" + glazeIdx, () => {
+    const V = VASES[vaseKey], G = ramp(GLAZES[glazeIdx][1]), back = mkc(SW, SH), front = mkc(SW, SH), rx = V.hw;
+    // mouth interior
+    const water = ["#0a2630", "#17434f", "#2f7686", "#6fb4c0"];
+    for (let y = V.my - V.ry - 1; y <= V.my + V.ry + 1; y++) for (let x = V.cx - rx - 1; x <= V.cx + rx + 1; x++) {
+      const e = Math.hypot((x - V.cx) / rx, (y - V.my) / V.ry);
+      if (e > 1) continue;
+      if (e > .88) px(back, x, y, y < V.my ? G[0][4] : G[1]);
+      else if (V.shape === "round") px(back, x, y, dith(x, y, .25 + .35 * (1 - e) + .15 * Math.sin(x * .3 + y), water));
+      else px(back, x, y, dith(x, y, .1 + .2 * (1 - e), G[0]));
+    }
+    // front body
+    for (let y = V.top; y <= V.bot; y++) {
+      const hy = V.prof(y);
+      for (let x = Math.floor(V.cx - hy); x <= Math.ceil(V.cx + hy); x++) {
+        const e = (x - V.cx) / hy, mouthE = (x - V.cx) / rx, rimY = Math.abs(mouthE) < 1 ? V.my + V.ry * Math.sqrt(1 - mouthE * mouthE) : V.my;
+        if (y < rimY - .5) continue;
+        if (y < rimY + 1.6 && Math.abs(mouthE) < 1) { px(front, x, y, G[0][5]); continue; }
+        if (Math.abs(e) > 1) continue;
+        const ne = V.shape === "flat" ? Math.sign(e) * Math.pow(Math.abs(e), 3.2) : e, nz = Math.sqrt(Math.max(0, 1 - ne * ne));
+        let v = .12 + .95 * Math.max(0, -.5 * ne + .78 * nz) - .16 * (y - V.top) / (V.bot - V.top);
+        if (Math.abs(e + .45) < .05) v += .14;
+        if (V.shape === "flat" && y > 176 && y < 180) v += .22; // glaze band
+        if (V.shape === "round" && y > V.bot - 3) v -= .2;
+        if (Math.abs(e) > .965) { px(front, x, y, G[1]); continue; }
+        px(front, x, y, dith(x, y, v, G[0]));
+      }
+    }
+    return { back, front };
+  });
+}
+
+/* ---------------- plant geometry + drawing ---------------- */
+function geo(it) {
+  const T = TY[it.type], V = VASES[S.vase], R = T.R * it.size;
+  const bx = V.cx + clamp((it.hx - V.cx) * .32 + (hash(it.seed, 1, 1) - .5) * V.mhw * .6, -V.mhw * .85, V.mhw * .85), by = V.my + hash(it.seed, 2, 2) * V.ry * .6;
+  const dx = it.hx - bx, dy = it.hy - by, bow = (.05 + .09 * hash(it.seed, 6, 6)) * (hash(it.seed, 5, 5) < .5 ? -1 : 1) * (it.bow || 1);
+  const p = [bx + dx * .22 - dy * bow, by + dy * .62 + dx * bow * .4];
+  const g = { T, R, B: [bx, by], P: p, H: [it.hx, it.hy] };
+  g.pt = t => { const u = 1 - t; return [u * u * bx + 2 * u * t * p[0] + t * t * it.hx, u * u * by + 2 * u * t * p[1] + t * t * it.hy]; };
+  g.ang = t => { const u = 1 - t, tx = 2 * u * (p[0] - bx) + 2 * t * (it.hx - p[0]), ty = 2 * u * (p[1] - by) + 2 * t * (it.hy - p[1]); return Math.atan2(ty, tx * A) / D2R; };
+  g.tan = g.ang(1);
+  const [hx, hy] = g.H;
+  if (T.kind === "rad") { g.hc = [hx, hy]; g.hr = R * 1.05; }
+  else if (T.kind === "dir") { g.hc = at(hx, hy, g.tan, R * .8); g.hr = R * 1.05; }
+  else if (T.kind === "spike") { const L = R * T.len; g.hc = at(hx, hy, g.tan, L / 2); g.hr = L / 2 + 4; }
+  else if (T.kind === "spray") { g.hc = at(hx, hy, g.tan, R * 1.1); g.hr = R * 1.6; }
+  else { g.hc = g.pt(.8); g.hr = R * 1.1; }
+  return g;
+}
+function sprite(it, g) {
+  const T = g.T, dirKind = T.kind !== "rad", rot = dirKind ? Math.round((g.tan + (it.turn || 0)) / 4) * 4 : (it.turn || 0) + hash(it.seed, 3, 3) * 360;
+  const key = ["sp", it.type, it.pal, g.R.toFixed(1), Math.round(rot), it.seed].join("|");
+  return memo(key, () => {
+    const half = Math.ceil(g.R * T.ext) + 4, c = mkc(2 * half + 1, 2 * half + 1);
+    T.draw(c, half, half, g.R, rot, ramp(T.cols[it.pal % T.cols.length]), it.seed);
+    return { c, half };
+  });
+}
+function stamp(scene, spr, x, y) {
+  const { c, half } = spr, ox = Math.round(x) - half, oy = Math.round(y) - half;
+  for (let j = 0; j < c.h; j++) for (let i = 0; i < c.w; i++) { const v = c.d[j * c.w + i]; if (v) px(scene, ox + i, oy + j, v); }
+}
+function drawPlant(scene, it, k = 1) {
+  const g = geo(it), T = g.T, R = g.R * k;
+  const Pf = ramp(T.cols[it.pal % T.cols.length]);
+  const stemP = T.fol ? ramp(mix(T.cols[it.pal % T.cols.length], "#2a5a3a", .45)) : ramp(it.stem || "#3f8f55");
+  const leafP = T.fol ? Pf : ramp(mix("#3f8f55", "#7ab060", hash(it.seed, 4, 4) * .5));
+  const hw = (T.sw || 3) / 2, len = Math.hypot(g.H[0] - g.B[0], g.H[1] - g.B[1]), N = Math.ceil(len * 1.5) + 4;
+  for (let i = 0; i <= N; i++) {
+    const [x, y] = g.pt(i / N);
+    for (let o = -Math.floor(hw); o <= Math.floor(hw); o++) px(scene, x + o, y, o < 0 ? stemP[0][3] : o > 0 ? stemP[0][1] : stemP[0][2]);
+  }
+  const L = T.lv;
+  if (L) for (let j = 0; j < L.n; j++) {
+    const t = L.n > 1 ? L.t0 + (L.t1 - L.t0) * j / (L.n - 1) : L.t0, [x, y] = g.pt(t), a0 = g.ang(t);
+    const f = L.taper ? (1 - .45 * t) : 1, ll = g.R * L.len * f;
+    for (const s of L.both ? [-1, 1] : [(j + (it.seed & 1)) % 2 ? 1 : -1]) {
+      const sa = a0 + s * L.ang;
+      petal(scene, x, y, sa, ll, ll * L.w, leafP, { k: L.k ?? .85, m: L.m ?? .7, vb: .85, vt: .35, veins: L.veins ?? 1 });
+    }
+  }
+  const spr = sprite(it, g);
+  stamp(scene, spr, g.H[0], g.H[1]);
+  return g;
+}
+
+/* ---------------- state ---------------- */
+const S = { vase: "dish", glaze: 0, bd: "dusk", mode: "pixel", items: [], sel: null, tool: null, toolSize: 1, toolPal: 0, nextId: 1, nextSeed: 11 };
+let hist = [];
+const order = () => [...S.items].sort((a, b) => ((a.z || 0) - (b.z || 0)) * 1000 + (a.hy - b.hy));
+function save() { try { localStorage.setItem("flower-arranger", JSON.stringify({ vase: S.vase, glaze: S.glaze, bd: S.bd, mode: S.mode, items: S.items, nextId: S.nextId, nextSeed: S.nextSeed })); } catch (e) {} }
+function pushHist() { hist.push(JSON.stringify(S.items)); if (hist.length > 60) hist.shift(); syncBar(); }
+function undo() { if (!hist.length) return; S.items = JSON.parse(hist.pop()); if (!S.items.find(i => i.id === S.sel)) S.sel = null; changed(); renderInsp(); syncBar(); }
+
+/* ---------------- rendering ---------------- */
+function composeScene(withSel) {
+  const bd = backdropBuf(S.bd, S.vase), vl = vaseLayers(S.vase, S.glaze), scene = { w: SW, h: SH, d: bd.d.slice() };
+  for (let i = 0; i < vl.back.d.length; i++) if (vl.back.d[i]) scene.d[i] = vl.back.d[i];
+  let selG = null;
+  for (const it of order()) { const g = drawPlant(scene, it); if (it.id === S.sel) selG = g; }
+  for (let i = 0; i < vl.front.d.length; i++) if (vl.front.d[i]) scene.d[i] = vl.front.d[i];
+  if (withSel && selG) {
+    const [cx, cy] = selG.hc, r = selG.hr + 3, n = Math.round(r * 1.1);
+    for (let i = 0; i < n; i++) if (i % 2 === 0) { const [x, y] = at(cx, cy, i * 360 / n, r); px(scene, x, y, "#ffe08a"); px(scene, x + 1, y, "#ffe08a"); }
+  }
+  return { scene, bd };
+}
+const stage = document.getElementById("stage");
+function renderPix(c) {
+  const rows = [];
+  for (let y = 0; y < c.h; y += 2) {
+    let out = "", key = "", n = 0, top = "", bot = "";
+    const flush = () => { if (n) out += `<span style="color:${top};background:${bot}">${"▀".repeat(n)}</span>`; n = 0; };
+    for (let x = 0; x < c.w; x++) {
+      const a = c.d[y * c.w + x], b = c.d[(y + 1) * c.w + x], k = a + b;
+      if (k !== key) { flush(); key = k; top = a; bot = b; }
+      n++;
+    }
+    flush(); rows.push(out);
+  }
+  return rows.join("\n");
+}
+const RAMPCH = " .'`,:;-~=+*xoO%#@";
+const rgbMemo = new Map(), rgbOf = h => { let v = rgbMemo.get(h); if (!v) rgbMemo.set(h, v = hex2rgb(h)); return v; };
+function renderAscii(scene, bd) {
+  const B = BACKDROPS[S.bd], rows = [];
+  for (let y = 0; y < SH; y += 2) {
+    let out = "", cur = "", buf = "";
+    for (let x = 0; x < SW; x++) {
+      const i1 = y * SW + x, i2 = i1 + SW, a = scene.d[i1], b = scene.d[i2], ta = a === bd.d[i1], tb = b === bd.d[i2];
+      let ch = " ", col = "";
+      if (!(ta && tb)) {
+        const ca = ta ? null : rgbOf(a), cb = tb ? null : rgbOf(b), rgb = ca && cb ? ca.map((v, i) => (v + cb[i]) / 2) : (ca || cb), w = ca && cb ? 1 : .55;
+        const lum = (.3 * rgb[0] + .59 * rgb[1] + .11 * rgb[2]) / 255, dens = clamp((lum * .85 + .28) * w + (w < 1 ? .1 : 0));
+        ch = RAMPCH[Math.min(RAMPCH.length - 1, Math.floor(dens * RAMPCH.length))];
+        const boost = 1.3;
+        col = "#" + rgb.map(v => Math.round(clamp(v * boost, 0, 255) / 17).toString(16)).join("");
+        if (ch === " ") col = "";
+      }
+      if (ch === " ") col = "";
+      if (col !== cur) { out += cur ? `<span style="color:${cur}">${buf}</span>` : buf; cur = col; buf = ""; }
+      buf += ch;
+    }
+    rows.push(out + (cur ? `<span style="color:${cur}">${buf}</span>` : buf));
+  }
+  return rows.join("\n");
+}
+let pending = false;
+function changed() { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; draw(); }); }
+function draw() {
+  const { scene, bd } = composeScene(true);
+  const B = BACKDROPS[S.bd];
+  stage.style.background = S.mode === "ascii" ? "#0a0e11" : "#000";
+  stage.innerHTML = S.mode === "ascii" ? renderAscii(scene, bd) : renderPix(scene);
+  scheduleLive();
+}
+function fit() {
+  const wrap = stage.parentElement, w = wrap.clientWidth, fs = Math.max(3, Math.min(9, w / (SW * .602)));
+  stage.style.fontSize = fs + "px";
+}
+addEventListener("resize", fit);
+
+/* ---------------- interaction ---------------- */
+function toPx(e) { const r = stage.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * SW, y: (e.clientY - r.top) / r.height * SH }; }
+function hitTest(p) {
+  const list = order().reverse();
+  for (const it of list) { const g = geo(it); if (Math.hypot((p.x - g.hc[0]) * A, p.y - g.hc[1]) < g.hr) return it; }
+  for (const it of list) { const g = geo(it); for (let t = .3; t <= 1; t += .04) { const [x, y] = g.pt(t); if (Math.hypot((p.x - x) * A, p.y - y) < 4.5) return it; } }
+  return null;
+}
+const minY = (T, size) => 6 + T.R * size * (T.kind === "spike" ? T.len : T.kind === "spray" ? 2 : T.kind === "dir" ? 1.7 : 1.2);
+function place(type, x, y) {
+  const V = VASES[S.vase], T = TY[type];
+  return { id: S.nextId++, type, pal: S.toolPal % T.cols.length, size: S.toolSize, turn: 0, hx: clamp(x, 8, SW - 8), hy: clamp(y, minY(T, S.toolSize), V.my - 14), seed: S.nextSeed++, bow: 1, z: 0 };
+}
+let drag = null;
+stage.addEventListener("pointerdown", e => {
+  const p = toPx(e), hit = hitTest(p);
+  if (hit && !e.shiftKey) {
+    S.sel = hit.id; pushHist(); const g = geo(hit);
+    drag = { it: hit, ox: hit.hx - p.x, oy: hit.hy - p.y }; stage.setPointerCapture(e.pointerId);
+  } else if (S.tool) {
+    pushHist(); const it = place(S.tool, p.x, p.y); S.items.push(it); S.sel = it.id; save();
+  } else S.sel = null;
+  changed(); renderInsp();
+});
+stage.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const p = toPx(e), V = VASES[S.vase];
+  drag.it.hx = clamp(p.x + drag.ox, 8, SW - 8); drag.it.hy = clamp(p.y + drag.oy, minY(TY[drag.it.type], drag.it.size), V.my - 14); changed();
+});
+addEventListener("pointerup", () => { if (drag) { drag = null; save(); } });
+stage.addEventListener("wheel", e => {
+  const it = S.items.find(i => i.id === S.sel); if (!it) return;
+  e.preventDefault(); it.size = clamp(it.size * (e.deltaY < 0 ? 1.05 : .95), .5, 1.8); changed(); renderInsp(); save();
+}, { passive: false });
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const it = S.items.find(i => i.id === S.sel);
+  if ((e.key === "Backspace" || e.key === "Delete") && it) { e.preventDefault(); removeSel(); }
+  else if (e.key === "Escape") { S.sel = null; S.tool = null; changed(); renderInsp(); syncPalette(); }
+  else if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undo(); }
+});
+function removeSel() { pushHist(); S.items = S.items.filter(i => i.id !== S.sel); S.sel = null; changed(); renderInsp(); save(); }
+
+/* ---------------- UI ---------------- */
+const palEl = document.getElementById("palette"), barEl = document.getElementById("bar"), inspEl = document.getElementById("insp");
+function thumb(type) {
+  const T = TY[type], cv = document.createElement("canvas"), c = mkc(56, 62);
+  const saved = S.vase; // thumbs use their own geometry: straight stem
+  const th = { fol: [18, .7], spike: [44, .5], spray: [34, .55], dir: [28, .75], rad: [26, .75] }[T.kind];
+  const it = { id: 0, type, pal: 0, size: th[1], turn: 0, hx: 28, hy: th[0], seed: 7, bow: 1 };
+  const V = VASES[S.vase], keep = [V.cx, V.my, V.mhw, V.ry]; // temporarily aim the stem base at the thumb's bottom
+  V.cx = 28; V.my = 60; V.mhw = 0; V.ry = 0;
+  drawPlant(c, it); V.cx = keep[0]; V.my = keep[1]; V.mhw = keep[2]; V.ry = keep[3];
+  const cw = 5, ch = 4; cv.width = c.w * cw; cv.height = c.h * ch;
+  const g = cv.getContext("2d"); g.fillStyle = "#0a0e11"; g.fillRect(0, 0, cv.width, cv.height);
+  for (let y = 0; y < c.h; y++) for (let x = 0; x < c.w; x++) { const v = c.d[y * c.w + x]; if (v) { g.fillStyle = v; g.fillRect(x * cw, y * ch, cw, ch); } }
+  return cv;
+}
+function buildPalette() {
+  let cat = "", grid = null;
+  for (const T of TYPES) {
+    if (T.cat !== cat) { cat = T.cat; const h = document.createElement("h3"); h.textContent = cat; palEl.append(h); grid = document.createElement("div"); grid.className = "grid"; palEl.append(grid); }
+    const b = document.createElement("button"); b.className = "fl"; b.dataset.id = T.id; b.append(thumb(T.id), T.name); b.title = T.name;
+    b.onclick = () => { S.tool = S.tool === T.id ? null : T.id; S.toolPal = 0; syncPalette(); renderInsp(); };
+    grid.append(b);
+  }
+}
+function syncPalette() { palEl.querySelectorAll(".fl").forEach(b => b.classList.toggle("on", b.dataset.id === S.tool)); }
+const btn = (label, fn, on) => { const b = document.createElement("button"); b.className = "b" + (on ? " on" : ""); b.textContent = label; b.onclick = fn; return b; };
+function grp(label, ...kids) { const g = document.createElement("div"); g.className = "grp"; const s = document.createElement("span"); s.textContent = label; g.append(s, ...kids); return g; }
+function syncBar() {
+  barEl.innerHTML = "";
+  barEl.append(
+    grp("Vase", ...Object.entries(VASES).map(([k, v]) => btn(v.name, () => { S.vase = k; S.items.forEach(i => { const V = VASES[k]; i.hy = clamp(i.hy, minY(TY[i.type], i.size), V.my - 14); }); changed(); save(); syncBar(); }, S.vase === k))),
+    grp("Glaze", ...GLAZES.map(([n, col], i) => { const b = document.createElement("button"); b.className = "sw" + (S.glaze === i ? " on" : ""); b.style.background = col; b.title = n; b.onclick = () => { S.glaze = i; changed(); save(); syncBar(); }; return b; })),
+    grp("Backdrop", ...Object.entries(BACKDROPS).map(([k, v]) => btn(v.name, () => { S.bd = k; changed(); save(); syncBar(); }, S.bd === k))),
+    grp("Render", btn("Pixel", () => { S.mode = "pixel"; changed(); save(); syncBar(); }, S.mode === "pixel"), btn("ASCII", () => { S.mode = "ascii"; changed(); save(); syncBar(); }, S.mode === "ascii")),
+    grp("", btn("Surprise me", surprise), (() => { const u = btn("Undo", undo); u.disabled = !hist.length; return u; })(), btn("Clear", () => { if (!S.items.length) return; pushHist(); S.items = []; S.sel = null; changed(); renderInsp(); save(); }), btn("Save PNG", savePng)),
+    grp("Stage", btn("Send to stage", () => sendToStage()), btn("Live", () => { S.live = !S.live; if (S.live) sendToStage(); syncBar(); }, S.live), btn("Voice", toggleVoice, recWanted), heardEl)
+  );
+}
+function renderInsp() {
+  inspEl.innerHTML = "";
+  const it = S.items.find(i => i.id === S.sel), T = it ? TY[it.type] : S.tool ? TY[S.tool] : null;
+  if (!T) { inspEl.innerHTML = '<span class="hint">Nothing selected — choose a flower from the left, then click the stage. Esc deselects, Delete removes, ⌘Z undoes.</span>'; return; }
+  const target = it || { get size() { return S.toolSize; }, set size(v) { S.toolSize = v; }, get pal() { return S.toolPal; }, set pal(v) { S.toolPal = v; }, turn: 0 };
+  const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = (it ? "" : "Next: ") + T.name; inspEl.append(nm);
+  const slider = (label, min, max, step, get, set) => { const l = document.createElement("label"), i = document.createElement("input"); i.type = "range"; i.min = min; i.max = max; i.step = step; i.value = get(); i.oninput = () => { set(+i.value); changed(); }; i.onchange = save; l.append(label, i); return l; };
+  inspEl.append(slider("Size", .5, 1.8, .05, () => target.size, v => { target.size = v; }));
+  if (it) inspEl.append(slider("Turn", T.kind === "rad" ? -180 : -40, T.kind === "rad" ? 180 : 40, 1, () => it.turn || 0, v => { it.turn = v; }));
+  const sws = document.createElement("div"); sws.className = "grp";
+  T.cols.forEach((col, i) => { const b = document.createElement("button"); b.className = "sw" + ((target.pal % T.cols.length) === i ? " on" : ""); b.style.background = col; b.onclick = () => { if (it) pushHist(); target.pal = i; changed(); renderInsp(); save(); }; sws.append(b); });
+  inspEl.append(sws);
+  if (it) inspEl.append(btn("Flip bend", () => { pushHist(); it.seed += 1; changed(); save(); }), btn("Front", () => { pushHist(); it.z = Math.max(0, ...S.items.map(i => i.z || 0)) + 1; changed(); save(); }), btn("Back", () => { pushHist(); it.z = Math.min(0, ...S.items.map(i => i.z || 0)) - 1; changed(); save(); }), btn("Remove", removeSel));
+}
+function snapshot(cw = 6, ch = 5) {
+  const { scene } = composeScene(false), cv = document.createElement("canvas"); cv.width = SW * cw; cv.height = SH * ch;
+  const g = cv.getContext("2d"); g.fillStyle = BACKDROPS[S.bd].flat; g.fillRect(0, 0, cv.width, cv.height);
+  for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) { const v = scene.d[y * SW + x]; if (v) { g.fillStyle = v; g.fillRect(x * cw, y * ch, cw, ch); } }
+  return cv;
+}
+function savePng() {
+  const a = document.createElement("a"); a.href = snapshot().toDataURL("image/png"); a.download = "flower-arrangement.png"; a.click();
+}
+
+/* ---------------- class stage + voice (TDM 155AI week 10) ----------------
+   The arrangement can go to /stage as an image cue (same BroadcastChannel contract as the rest of the app:
+   see lib/stage/stage.js), and a microphone button lets you say flower names to place them. */
+const STAGE_CHANNEL = "tdm155ai-stage";
+let stageBus = null, liveTimer = 0;
+function sendToStage(fade = 0.3) {
+  try {
+    stageBus = stageBus || new BroadcastChannel(STAGE_CHANNEL);
+    const cue = { id: "ikebana", label: "Ikebana", kind: "image", src: snapshot(3, 2.5).toDataURL("image/jpeg", 0.9), options: { fit: "contain", fadeIn: fade } };
+    stageBus.postMessage({ type: "cue", cue, at: Date.now() });
+  } catch (e) {}
+}
+function scheduleLive() { if (!S.live) return; clearTimeout(liveTimer); liveTimer = setTimeout(() => sendToStage(0), 250); }
+
+const heardEl = document.createElement("span"); heardEl.className = "hint"; heardEl.id = "heard";
+const norm = s => s.toLowerCase().replace(/[^a-z ]/g, "").replace(/\s+/g, " ").trim();
+function voiceWords() { // word or phrase -> action
+  const m = new Map();
+  for (const T of TYPES) {
+    const n = norm(T.name); m.set(n, () => placeNamed(T.id));
+    if (n === "babys breath" || n === "babys  breath") m.set("babys breath", () => placeNamed(T.id));
+  }
+  for (const [k, v] of Object.entries(VASES)) m.set(norm(v.name).replace(/^flat /, "").replace(/^tall /, "").replace(/ vase$/, ""), () => { S.vase = k; S.items.forEach(i => { i.hy = clamp(i.hy, minY(TY[i.type], i.size), v.my - 14); }); changed(); save(); syncBar(); });
+  for (const [k, v] of Object.entries(BACKDROPS)) m.set(norm(v.name), () => { S.bd = k; changed(); save(); syncBar(); });
+  m.set("clear", () => { pushHist(); S.items = []; S.sel = null; changed(); renderInsp(); save(); });
+  m.set("surprise", surprise);
+  m.set("ascii", () => { S.mode = "ascii"; changed(); save(); syncBar(); });
+  m.set("pixel", () => { S.mode = "pixel"; changed(); save(); syncBar(); });
+  m.set("undo", undo);
+  return m;
+}
+function placeNamed(id) { // put one flower of this type somewhere on the arc above the vase
+  pushHist(); const V = VASES[S.vase], T = TY[id], th = (Math.random() - .5) * 124, r = (50 + Math.random() * 70) * clamp((V.my - 36) / 140, .5, 1);
+  S.toolPal = Math.floor(Math.random() * T.cols.length); S.toolSize = .85 + Math.random() * .35;
+  const it = place(id, V.cx + sn(th) * r * 1.05, V.my - cs(th) * r * 1.1); S.toolPal = 0; S.toolSize = 1;
+  S.items.push(it); S.sel = it.id; changed(); renderInsp(); save();
+}
+let rec = null, recWanted = false;
+function toggleVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { heardEl.textContent = "Voice needs Chrome or Edge."; return; }
+  recWanted = !recWanted; syncBar();
+  if (!recWanted) { rec && rec.stop(); heardEl.textContent = ""; return; }
+  const words = voiceWords(), seen = {};
+  rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
+  rec.onresult = ev => {
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = " " + norm(ev.results[i][0].transcript) + " "; heardEl.textContent = "heard: " + t.trim();
+      for (const [w, act] of words) {
+        const n = t.split(" " + w + " ").length - 1, key = i + "|" + w; // count whole-word hits; fire only new ones
+        if (n > (seen[key] || 0)) { for (let k = seen[key] || 0; k < n; k++) act(); seen[key] = n; }
+      }
+    }
+  };
+  rec.onend = () => { if (recWanted) { for (const k in seen) delete seen[k]; try { rec.start(); } catch (e) {} } };
+  rec.onerror = e => { heardEl.textContent = e.error === "not-allowed" ? "Microphone permission refused." : "voice: " + e.error; };
+  rec.start(); heardEl.textContent = "listening… say a flower: rose, tulip, lavender, clear, surprise";
+}
+function surprise() {
+  pushHist(); const V = VASES[S.vase], items = [], seed0 = S.nextSeed;
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  const by = (...ids) => ids.map(i => TY[i]);
+  const plan = [
+    ...Array(2).fill(["fol", 105, 135]), ["spray", 95, 118], ["spray", 88, 110],
+    ...Array(3).fill(["focal", 40, 78]), ...Array(5).fill(["mid", 66, 108]), ...Array(2).fill(["spike", 92, 124]), ["mid", 70, 104],
+  ];
+  const pools = { fol: by("eucalyptus", "fern", "olive"), spray: by("babysbreath"), focal: by("rose", "peony", "dahlia", "sunflower", "ranunculus", "hydrangea", "lily"), mid: by("daisy", "gerbera", "cosmos", "poppy", "anemone", "mum", "carnation", "tulip", "orchid", "ranunculus"), spike: by("lavender", "delphinium", "snapdragon") };
+  const n = plan.length, angs = plan.map((_, i) => -62 + 124 * (i + .5) / n).sort(() => Math.random() - .5);
+  plan.forEach(([k, r0, r1], i) => {
+    const T = pick(pools[k]), th = angs[i] + (Math.random() - .5) * 10, r = (r0 + Math.random() * (r1 - r0)) * clamp((V.my - 36) / 140, .5, 1), kk = V.shape === "round" ? 1 : .85;
+    S.toolPal = Math.floor(Math.random() * T.cols.length); S.toolSize = .85 + Math.random() * .35;
+    const it = place(T.id, V.cx + sn(th) * r * 1.05 * kk, V.my - cs(th) * r * 1.1); it.turn = k === "rad" ? Math.round(Math.random() * 360 - 180) : 0; items.push(it);
+  });
+  S.toolPal = 0; S.toolSize = 1; S.items = items; S.sel = null; changed(); renderInsp(); save(); syncBar();
+}
+
+/* ---------------- boot ---------------- */
+try { const s = JSON.parse(localStorage.getItem("flower-arranger")); if (s && s.items) Object.assign(S, { vase: VASES[s.vase] ? s.vase : "dish", glaze: s.glaze | 0, bd: BACKDROPS[s.bd] ? s.bd : "dusk", mode: s.mode === "ascii" ? "ascii" : "pixel", items: s.items.filter(i => TY[i.type]), nextId: s.nextId || 1, nextSeed: s.nextSeed || 11 }); } catch (e) {}
+buildPalette(); syncBar(); renderInsp(); fit();
+if (!S.items.length) surprise();
+changed();
+</script>
+</body>
+</html>

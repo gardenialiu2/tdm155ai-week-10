@@ -222,3 +222,43 @@ export function renderStitch(ctx, W, H, sample, video, { cols, mirror }, state) 
     }
   }
 }
+
+// ---------- 4. Pixel art ----------
+
+// Add a palette here and it appears in the menu. Each color is [r, g, b].
+export const PALETTES = {
+  gameboy: { label: "Game Boy", colors: [[15, 56, 15], [48, 98, 48], [139, 172, 15], [155, 188, 15]] },
+  pico8: { label: "PICO-8", colors: [[0, 0, 0], [29, 43, 83], [126, 37, 83], [0, 135, 81], [171, 82, 54], [95, 87, 79], [194, 195, 199], [255, 241, 232], [255, 0, 77], [255, 163, 0], [255, 236, 39], [0, 228, 54], [41, 173, 255], [131, 118, 156], [255, 119, 168], [255, 204, 170]] },
+  pastel: { label: "Pastel", colors: [[48, 40, 66], [120, 96, 150], [210, 150, 190], [248, 190, 180], [252, 232, 190], [170, 214, 190], [140, 190, 230], [250, 248, 244]] },
+};
+
+// Ordered (Bayer) dithering: the 4×4 grid nudges each pixel's brightness a little before it picks a color,
+// which is what gives old-game art its crosshatch texture.
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+export function renderPixel(ctx, W, H, sample, video, { cols, mirror, palette, dither }) {
+  const cell = W / cols;
+  const rows = Math.max(1, Math.floor(H / cell));
+  const cellH = H / rows;
+  const colors = (PALETTES[palette] || PALETTES.gameboy).colors;
+  const { data } = sample(video, cols, rows, mirror);
+  const spread = colors.length > 6 ? 22 : 48; // fewer colors need a bigger nudge
+
+  ctx.fillStyle = "#0a0a0b";
+  ctx.fillRect(0, 0, W, H);
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const i = (y * cols + x) * 4;
+      const nudge = dither ? (BAYER[(y & 3) * 4 + (x & 3)] / 16 - 0.5) * spread : 0;
+      const r = clamp(data[i] * 1.05 + nudge), g = clamp(data[i + 1] * 1.05 + nudge), b = clamp(data[i + 2] * 1.05 + nudge);
+      let best = 0, bestD = Infinity;
+      for (let t = 0; t < colors.length; t++) {
+        const d = threadDistance(r, g, b, colors[t]);
+        if (d < bestD) { bestD = d; best = t; }
+      }
+      const c = colors[best];
+      ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx.fillRect(Math.floor(x * cell), Math.floor(y * cellH), Math.ceil(cell), Math.ceil(cellH)); // whole pixels, no seams
+    }
+  }
+}
