@@ -26,10 +26,10 @@ export default function Stylize() {
   const [mode, setMode] = useState("ascii");
   const [mirror, setMirror] = useState(true);
   const [color, setColor] = useState(true);
-  const [asciiCols, setAsciiCols] = useState(110);
+  const [asciiCols, setAsciiCols] = useState(220);
   const [stitchCols, setStitchCols] = useState(80);
   const [wet, setWet] = useState(2);
-  const [pixelCols, setPixelCols] = useState(96);
+  const [pixelCols, setPixelCols] = useState(240);
   const [palette, setPalette] = useState("gameboy");
   const [dither, setDither] = useState(true);
   const [faceOnly, setFaceOnly] = useState(false);
@@ -153,7 +153,7 @@ export default function Stylize() {
       <div className="sty-controls">
         {mode === "ascii" && (
           <>
-            <label>Characters across <input type="range" min="40" max="220" value={asciiCols} onChange={(e) => setAsciiCols(+e.target.value)} /> <span>{asciiCols}</span></label>
+            <label>Characters across <input type="range" min="80" max="320" value={asciiCols} onChange={(e) => setAsciiCols(+e.target.value)} /> <span>{asciiCols}</span></label>
             <label className="cv-check"><input type="checkbox" checked={color} onChange={(e) => setColor(e.target.checked)} /> Color</label>
           </>
         )}
@@ -165,7 +165,7 @@ export default function Stylize() {
         )}
         {mode === "pixel" && (
           <>
-            <label>Pixels across <input type="range" min="32" max="200" value={pixelCols} onChange={(e) => setPixelCols(+e.target.value)} /> <span>{pixelCols}</span></label>
+            <label>Pixels across <input type="range" min="64" max="400" value={pixelCols} onChange={(e) => setPixelCols(+e.target.value)} /> <span>{pixelCols}</span></label>
             <label>Palette <select value={palette} onChange={(e) => setPalette(e.target.value)}>
               {Object.entries(PALETTES).map(([id, p]) => <option key={id} value={id}>{p.label}</option>)}
             </select></label>
